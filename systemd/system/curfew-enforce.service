@@ -1,0 +1,10 @@
+[Unit]
+Description=Curfew enforce check on boot
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/curfew/curfew.sh enforce-check
+
+[Install]
+WantedBy=multi-user.target

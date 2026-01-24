@@ -1,0 +1,6 @@
+[Unit]
+Description=Curfew shutdown
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/curfew/curfew.sh shutdown

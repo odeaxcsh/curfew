@@ -1,0 +1,6 @@
+[Unit]
+Description=Curfew warning notification
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/curfew notify
