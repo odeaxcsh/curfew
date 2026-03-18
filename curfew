@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="curfew.service"
+TIMER="curfew.timer"
+
+OVERRIDE_DIR="/etc/systemd/system/${SERVICE}.d"
+OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
+
+die(){ echo "curfew: $*" >&2; exit 1; }
+
+run_root() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+tee_root() {
+  local path="$1"
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    tee "$path" >/dev/null
+  else
+    sudo tee "$path" >/dev/null
+  fi
+}
+
+escape_systemd_env_value() {
+  # For Environment="KEY=VALUE" (double-quoted). Escape \ and "
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+# Read existing overrides so "set" preserves other keys you previously set.
+declare -A OENV=()
+read_override() {
+  OENV=()
+  [[ -r "$OVERRIDE_FILE" ]] || return 0
+
+  local line key val
+  while IFS= read -r line; do
+    [[ "$line" =~ ^Environment=\"([^=]+)=(.*)\"$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    val="${BASH_REMATCH[2]}"
+    # unescape basic sequences we emit
+    val="${val//\\\"/\"}"
+    val="${val//\\\\/\\}"
+    OENV["$key"]="$val"
+  done < "$OVERRIDE_FILE"
+}
+
+write_override() {
+  run_root mkdir -p "$OVERRIDE_DIR"
+
+  {
+    echo "[Service]"
+    for key in START END WARN_BEFORE WARN_MESSAGE; do
+      if [[ -n "${OENV[$key]+x}" ]]; then
+        printf 'Environment="%s=%s"\n' "$key" "$(escape_systemd_env_value "${OENV[$key]}")"
+      fi
+    done
+  } | tee_root "$OVERRIDE_FILE"
+
+  run_root systemctl daemon-reload
+  # If the timer is running, restart it to pick up unit changes cleanly
+  if run_root systemctl is-active --quiet "$TIMER"; then
+    run_root systemctl restart "$TIMER"
+  fi
+}
+
+cmd_status() {
+  echo "=== Timer status ==="
+  systemctl --no-pager status "$TIMER" || true
+  echo
+  echo "=== Next runs ==="
+  systemctl list-timers --all "$TIMER" || true
+  echo
+  echo "=== Effective environment for ${SERVICE} ==="
+  systemctl show "$SERVICE" -p Environment --no-pager || true
+  echo
+  echo "=== Override file ==="
+  if [[ -r "$OVERRIDE_FILE" ]]; then
+    sed 's/^/  /' "$OVERRIDE_FILE"
+  else
+    echo "  (none)"
+  fi
+}
+
+cmd_logs() {
+  local n="${1:-200}"
+  journalctl -u "$SERVICE" -n "$n" --no-pager || true
+}
+
+cmd_enable() { run_root systemctl enable --now "$TIMER"; }
+cmd_disable(){ run_root systemctl disable --now "$TIMER" || true; }
+
+# Option A: stop until reboot (timer remains enabled)
+cmd_pause() { 
+  echo "Please type in: 'I am sure whatever I'm doing is worth staying up late and waking up feeling shitty tomorrow' to proceed:"
+  read -r confirmation
+  if [[ "$confirmation" != "I am sure whatever I'm doing is worth staying up late and waking up feeling shitty tomorrow" ]]; then
+    echo "Aborting pause."
+    exit 0
+  fi
+  run_root systemctl stop "$TIMER" || true; 
+}
+
+cmd_resume(){ run_root systemctl start "$TIMER"; }
+
+cmd_edit() {
+  run_root systemctl edit "$SERVICE"
+  run_root systemctl daemon-reload
+}
+
+cmd_set() {
+  local field="${1:-}"; shift || true
+  [[ -n "$field" ]] || die "usage: curfew set {start|end|warn_before|message} VALUE..."
+
+  # Everything after field is the value (message can have spaces)
+  local value="$*"
+  [[ -n "$value" ]] || die "missing value"
+
+  read_override
+
+  case "$field" in
+    start)       OENV["START"]="$value" ;;
+    end)         OENV["END"]="$value" ;;
+    warn_before) OENV["WARN_BEFORE"]="$value" ;;
+    message)     OENV["WARN_MESSAGE"]="$value" ;;
+    *) die "unknown field '$field' (use: start, end, warn_before, message)" ;;
+  esac
+
+  write_override
+  echo "curfew: set $field -> $value"
+}
+
+cmd_reset() {
+  run_root rm -f "$OVERRIDE_FILE"
+  run_root rmdir "$OVERRIDE_DIR" 2>/dev/null || true
+  run_root systemctl daemon-reload
+  echo "curfew: overrides removed"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  curfew status
+  curfew logs [N]
+
+  curfew enable
+  curfew disable
+
+  curfew pause        # stop timer until reboot (Option A)
+  curfew resume
+
+  curfew edit         # opens systemctl edit curfew.service
+
+  curfew set start VALUE
+  curfew set end VALUE
+  curfew set warn_before VALUE
+  curfew set message TEXT...
+
+  curfew reset        # remove overrides, revert to unit defaults
+EOF
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    status) cmd_status ;;
+    logs) cmd_logs "${1:-200}" ;;
+    enable) cmd_enable ;;
+    disable) cmd_disable ;;
+    pause) cmd_pause ;;
+    resume) cmd_resume ;;
+    edit) cmd_edit ;;
+    set) cmd_set "$@" ;;
+    reset) cmd_reset ;;
+    ""|help|-h|--help) usage ;;
+    *) die "unknown command '$cmd' (try: curfew help)" ;;
+  esac
+}
+
+main "$@"

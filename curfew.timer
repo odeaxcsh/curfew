@@ -1,0 +1,10 @@
+[Unit]
+Description=Run curfew enforcement every minute
+
+[Timer]
+OnCalendar=minutely
+Persistent=true
+Unit=curfew.service
+
+[Install]
+WantedBy=timers.target

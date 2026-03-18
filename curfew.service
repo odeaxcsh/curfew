@@ -1,0 +1,12 @@
+[Unit]
+Description=Curfew poweroff service
+
+[Service]
+Type=oneshot
+
+Environment="START=22:00"
+Environment="END=06:00"
+Environment="WARN_BEFORE=15"
+Environment="WARN_MESSAGE=Curfew starts soon. Save your work!"
+
+ExecStart=/usr/local/sbin/curfew-service.sh
