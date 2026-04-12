@@ -1,0 +1,10 @@
+[Unit]
+Description=Curfew enforcement service
+ConditionPathExists=/etc/curfew/curfew.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/curfew/curfew-service
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=curfew-service

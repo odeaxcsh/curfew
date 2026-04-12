@@ -1,0 +1,6 @@
+start=22:00
+end=06:00
+warn_before=15
+warn_message=Curfew starts soon. Save your work!
+enabled=true
+dry_run=true

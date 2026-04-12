@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Curfew
+Comment=Manage sleep curfew schedule
+Exec=curfew-gui
+Icon=preferences-system-time
+Terminal=false
+Type=Application
+Categories=Utility;GTK;
+Keywords=curfew;sleep;timer;shutdown;
