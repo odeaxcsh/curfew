@@ -1,9 +1,0 @@
-#ifndef CURFEW_HELPER_H
-#define CURFEW_HELPER_H
-
-#define CURFEW_HELPER_OK        0
-#define CURFEW_HELPER_ERR_ARGS  1
-#define CURFEW_HELPER_ERR_IO    2
-#define CURFEW_HELPER_ERR_PERM  3
-
-#endif

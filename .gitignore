@@ -1,6 +1,9 @@
 build/
+pkg/
 builddir/
 *.o
 *.a
 *.so
 .cache/
+*.pkg.tar.zst
+

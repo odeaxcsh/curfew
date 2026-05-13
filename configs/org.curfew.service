@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.curfew
+Exec=/usr/bin/false
+User=root
+SystemdService=curfew-daemon.service

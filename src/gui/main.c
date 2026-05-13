@@ -1,408 +1,493 @@
 /*
- * curfew-gui: GTK4 + libadwaita settings/status frontend.
+ * curfew-gui: GTK4/libadwaita frontend for the curfew daemon.
  *
- * Reads config directly (unprivileged), routes writes through pkexec helper.
+ * Communicates with org.curfew on the system bus via sd-bus.
  */
-#include "curfew/core.h"
-#include "curfew/config.h"
-#include "curfew/systemd_util.h"
+#include "common/dbus_names.h"
 
 #include <adwaita.h>
+#include <gtk/gtk.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
+#include <systemd/sd-bus.h>
 
-#define HELPER_PATH "/usr/lib/curfew/curfew-helper"
-
-/* ---- state ---- */
+/* ---- application state ---- */
 
 typedef struct {
-    AdwApplicationWindow *window;
-    curfew_config_t       cfg;
+    AdwApplication   *app;
+    sd_bus           *bus;
 
-    /* status page */
-    GtkLabel *lbl_timer_state;
-    GtkLabel *lbl_schedule;
-    GtkLabel *lbl_eval;
-    GtkLabel *lbl_warn;
+    /* widgets — status page */
+    AdwToastOverlay  *toast_overlay;
+    AdwActionRow     *row_paused;
+    AdwActionRow     *row_in_curfew;
+    AdwActionRow     *row_should_warn;
+    AdwActionRow     *row_schedule;
+    AdwActionRow     *row_reason;
+    AdwActionRow     *row_warn_msg;
 
-    /* settings widgets */
-    GtkEntry       *ent_start;
-    GtkEntry       *ent_end;
-    GtkSpinButton  *spn_warn;
-    GtkEntry       *ent_message;
-    GtkSwitch      *sw_enabled;
+    AdwStatusPage    *status_banner;
 
-    /* logs */
-    GtkTextBuffer  *log_buffer;
-} CurfewApp;
+    /* widgets — settings page */
+    AdwEntryRow      *entry_start;
+    AdwEntryRow      *entry_end;
+    AdwSpinRow       *spin_warn;
+    AdwEntryRow      *entry_message;
+    AdwSwitchRow     *switch_dry_run;
 
-/* ---- helper invocation (same pattern as CLI) ---- */
+    /* widgets — logs page */
+    GtkTextView      *logs_text_view;
+    GtkWidget        *btn_refresh_logs;
+} CurfewGui;
 
-static int run_helper(const char *action, const char *arg1, const char *arg2)
+static CurfewGui gui;
+
+/* ---- toast helper ---- */
+
+static void show_toast(const char *msg)
 {
-    pid_t pid = fork();
-    if (pid < 0)
+    AdwToast *t = adw_toast_new(msg);
+    adw_toast_overlay_add_toast(gui.toast_overlay, t);
+}
+
+/* ---- D-Bus helpers ---- */
+
+static int bus_connect(void)
+{
+    if(gui.bus)
+        return 0;
+    int r = sd_bus_open_system(&gui.bus);
+    if(r < 0) {
+        fprintf(stderr, "curfew-gui: cannot connect to system bus: %s\n",
+                strerror(-r));
+        return r;
+    }
+    return 0;
+}
+
+/* Call a no-arg, no-return method. Returns 0 on success. */
+static int call_simple(const char *method)
+{
+    if(bus_connect() < 0)
         return -1;
-    if (pid == 0) {
-        if (arg2)
-            execlp("pkexec", "pkexec", HELPER_PATH,
-                   action, arg1, arg2, (char *)NULL);
-        else if (arg1)
-            execlp("pkexec", "pkexec", HELPER_PATH,
-                   action, arg1, (char *)NULL);
-        else
-            execlp("pkexec", "pkexec", HELPER_PATH,
-                   action, (char *)NULL);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
 
-/* ---- refresh display ---- */
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
 
-static void refresh_status(CurfewApp *app)
-{
-    curfew_config_load(CURFEW_CONFIG_PATH, &app->cfg);
-
-    /* timer state */
-    curfew_timer_status_t ts = {0};
-    curfew_sd_timer_status(&ts);
-    char timer_text[128];
-    snprintf(timer_text, sizeof(timer_text), "Timer: %s  |  Enabled: %s",
-             ts.active ? "active" : "inactive",
-             ts.enabled ? "yes" : "no");
-    gtk_label_set_text(app->lbl_timer_state, timer_text);
-
-    /* schedule */
-    char s[8], e[8];
-    curfew_format_time(app->cfg.start, s, sizeof(s));
-    curfew_format_time(app->cfg.end, e, sizeof(e));
-    char sched[128];
-    snprintf(sched, sizeof(sched), "%s – %s  (warn %d min before)",
-             s, e, app->cfg.warn_before_minutes);
-    gtk_label_set_text(app->lbl_schedule, sched);
-
-    /* policy eval */
-    curfew_policy_t policy = {
-        .start = app->cfg.start, .end = app->cfg.end,
-        .warn_before_minutes = app->cfg.warn_before_minutes,
-        .enabled = app->cfg.enabled,
-    };
-
-    if (curfew_policy_is_valid(&policy) && policy.enabled) {
-        curfew_state_t st = curfew_eval(&policy, time(NULL));
-        gtk_label_set_text(app->lbl_eval, st.reason);
-    } else {
-        gtk_label_set_text(app->lbl_eval, "enforcement disabled or invalid");
+    int r = sd_bus_call_method(gui.bus,
+                               CURFEW_DBUS_NAME, CURFEW_DBUS_PATH,
+                               CURFEW_DBUS_INTERFACE, method,
+                               &err, &reply, "");
+    if(r < 0) {
+        show_toast(err.message ? err.message : strerror(-r));
+        sd_bus_error_free(&err);
+        return r;
     }
 
-    /* warning message */
-    gtk_label_set_text(app->lbl_warn, app->cfg.warn_message);
+    sd_bus_message_unref(reply);
+    sd_bus_error_free(&err);
+    return 0;
 }
 
-static void populate_settings(CurfewApp *app)
+/* ---- refresh status page ---- */
+
+static void refresh_status(void)
 {
-    char buf[8];
-    curfew_format_time(app->cfg.start, buf, sizeof(buf));
-    gtk_editable_set_text(GTK_EDITABLE(app->ent_start), buf);
-
-    curfew_format_time(app->cfg.end, buf, sizeof(buf));
-    gtk_editable_set_text(GTK_EDITABLE(app->ent_end), buf);
-
-    gtk_spin_button_set_value(app->spn_warn, app->cfg.warn_before_minutes);
-    gtk_editable_set_text(GTK_EDITABLE(app->ent_message), app->cfg.warn_message);
-    gtk_switch_set_active(app->sw_enabled, app->cfg.enabled);
-}
-
-/* ---- callbacks ---- */
-
-static void on_apply_clicked(GtkButton *btn, gpointer data)
-{
-    (void)btn;
-    CurfewApp *app = data;
-
-    const char *start = gtk_editable_get_text(GTK_EDITABLE(app->ent_start));
-    const char *end   = gtk_editable_get_text(GTK_EDITABLE(app->ent_end));
-    const char *msg   = gtk_editable_get_text(GTK_EDITABLE(app->ent_message));
-    int warn = gtk_spin_button_get_value_as_int(app->spn_warn);
-    gboolean enabled = gtk_switch_get_active(app->sw_enabled);
-
-    /* validate times locally */
-    curfew_time_t tmp;
-    if (curfew_parse_time(start, &tmp) < 0 ||
-        curfew_parse_time(end, &tmp) < 0) {
-        /* show error inline via toast */
-        g_warning("Invalid time format (use HH:MM)");
+    if(bus_connect() < 0) {
+        show_toast("Cannot connect to system bus");
         return;
     }
 
-    run_helper("set-config", "start", start);
-    run_helper("set-config", "end", end);
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
 
-    char warn_str[16];
-    snprintf(warn_str, sizeof(warn_str), "%d", warn);
-    run_helper("set-config", "warn_before", warn_str);
-    run_helper("set-config", "message", msg);
-    run_helper("set-config", "enabled", enabled ? "true" : "false");
-    run_helper("daemon-reload", NULL, NULL);
+    /* GetConfig → (ssisb) */
+    int r = sd_bus_call_method(gui.bus,
+                               CURFEW_DBUS_NAME, CURFEW_DBUS_PATH,
+                               CURFEW_DBUS_INTERFACE, "GetConfig",
+                               &err, &reply, "");
+    if(r < 0) {
+        show_toast(err.message ? err.message : strerror(-r));
+        sd_bus_error_free(&err);
+        return;
+    }
 
-    refresh_status(app);
+    const char *start, *end, *msg;
+    int warn, dry_run;
+    r = sd_bus_message_read(reply, "ssisb", &start, &end, &warn, &msg,
+                            &dry_run);
+    if(r < 0) {
+        show_toast("Failed to parse GetConfig response");
+        sd_bus_message_unref(reply);
+        sd_bus_error_free(&err);
+        return;
+    }
+
+    char schedule[64];
+    snprintf(schedule, sizeof(schedule), "%s – %s  (warn %d min)", start, end, warn);
+    adw_action_row_set_subtitle(gui.row_schedule, schedule);
+    adw_action_row_set_subtitle(gui.row_warn_msg, msg);
+
+    sd_bus_message_unref(reply);
+    sd_bus_error_free(&err);
+
+    /* GetStatus → (bbbs) */
+    err = (sd_bus_error)SD_BUS_ERROR_NULL;
+    reply = NULL;
+    r = sd_bus_call_method(gui.bus,
+                           CURFEW_DBUS_NAME, CURFEW_DBUS_PATH,
+                           CURFEW_DBUS_INTERFACE, "GetStatus",
+                           &err, &reply, "");
+    if(r < 0) {
+        show_toast(err.message ? err.message : strerror(-r));
+        sd_bus_error_free(&err);
+        return;
+    }
+
+    int st_paused, in_curfew, should_warn;
+    const char *reason;
+    r = sd_bus_message_read(reply, "bbbs", &st_paused,
+                            &in_curfew, &should_warn, &reason);
+    if(r < 0) {
+        show_toast("Failed to parse GetStatus response");
+        sd_bus_message_unref(reply);
+        sd_bus_error_free(&err);
+        return;
+    }
+
+    adw_action_row_set_subtitle(gui.row_paused,
+                                st_paused ? "Yes" : "No");
+    adw_action_row_set_subtitle(gui.row_in_curfew,
+                                in_curfew ? "Yes" : "No");
+    adw_action_row_set_subtitle(gui.row_should_warn,
+                                should_warn ? "Yes" : "No");
+    adw_action_row_set_subtitle(gui.row_reason, reason);
+
+    if(in_curfew) {
+        adw_status_page_set_icon_name(gui.status_banner, "weather-clear-night-symbolic");
+        adw_status_page_set_title(gui.status_banner, "Curfew Active");
+        adw_status_page_set_description(gui.status_banner,
+            st_paused ? "Enforcement paused" : "System will shut down");
+        gtk_widget_add_css_class(GTK_WIDGET(gui.status_banner), "error");
+        gtk_widget_remove_css_class(GTK_WIDGET(gui.status_banner), "warning");
+        gtk_widget_remove_css_class(GTK_WIDGET(gui.status_banner), "success");
+    } else if(should_warn) {
+        adw_status_page_set_icon_name(gui.status_banner, "dialog-warning-symbolic");
+        adw_status_page_set_title(gui.status_banner, "Warning");
+        adw_status_page_set_description(gui.status_banner, "Curfew starts soon");
+        gtk_widget_add_css_class(GTK_WIDGET(gui.status_banner), "warning");
+        gtk_widget_remove_css_class(GTK_WIDGET(gui.status_banner), "error");
+        gtk_widget_remove_css_class(GTK_WIDGET(gui.status_banner), "success");
+    } else {
+        adw_status_page_set_icon_name(gui.status_banner, "emblem-ok-symbolic");
+        adw_status_page_set_title(gui.status_banner, "All Clear");
+        adw_status_page_set_description(gui.status_banner, "No curfew active");
+        gtk_widget_add_css_class(GTK_WIDGET(gui.status_banner), "success");
+        gtk_widget_remove_css_class(GTK_WIDGET(gui.status_banner), "error");
+        gtk_widget_remove_css_class(GTK_WIDGET(gui.status_banner), "warning");
+    }
+
+    sd_bus_message_unref(reply);
+    sd_bus_error_free(&err);
 }
 
-static void on_enable_clicked(GtkButton *btn, gpointer data)
+/* ---- refresh settings page ---- */
+
+static void refresh_settings(void)
 {
-    (void)btn;
-    CurfewApp *app = data;
-    run_helper("timer-enable", NULL, NULL);
-    refresh_status(app);
+    if(bus_connect() < 0)
+        return;
+
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
+
+    int r = sd_bus_call_method(gui.bus,
+                               CURFEW_DBUS_NAME, CURFEW_DBUS_PATH,
+                               CURFEW_DBUS_INTERFACE, "GetConfig",
+                               &err, &reply, "");
+    if(r < 0) {
+        show_toast(err.message ? err.message : strerror(-r));
+        sd_bus_error_free(&err);
+        return;
+    }
+
+    const char *start, *end, *msg;
+    int warn, dry_run;
+    r = sd_bus_message_read(reply, "ssisb", &start, &end, &warn, &msg,
+                            &dry_run);
+    if(r < 0) {
+        show_toast("Failed to parse GetConfig response");
+        sd_bus_message_unref(reply);
+        sd_bus_error_free(&err);
+        return;
+    }
+
+    gtk_editable_set_text(GTK_EDITABLE(gui.entry_start), start);
+    gtk_editable_set_text(GTK_EDITABLE(gui.entry_end), end);
+    adw_spin_row_set_value(gui.spin_warn, warn);
+    gtk_editable_set_text(GTK_EDITABLE(gui.entry_message), msg);
+    adw_switch_row_set_active(gui.switch_dry_run, dry_run);
+    sd_bus_message_unref(reply);
+    sd_bus_error_free(&err);
 }
 
-static void on_disable_clicked(GtkButton *btn, gpointer data)
+/* ---- refresh logs page ---- */
+
+static void refresh_logs(void)
 {
-    (void)btn;
-    CurfewApp *app = data;
-    run_helper("timer-disable", NULL, NULL);
-    refresh_status(app);
+    if(bus_connect() < 0)
+        return;
+
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
+
+    int r = sd_bus_call_method(gui.bus,
+                               CURFEW_DBUS_NAME, CURFEW_DBUS_PATH,
+                               CURFEW_DBUS_INTERFACE, "GetLogs",
+                               &err, &reply, "i", 200);
+    if(r < 0) {
+        show_toast(err.message ? err.message : strerror(-r));
+        sd_bus_error_free(&err);
+        return;
+    }
+
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(gui.logs_text_view);
+    gtk_text_buffer_set_text(buf, "", 0);
+
+    r = sd_bus_message_enter_container(reply, 'a', "(ss)");
+    if(r < 0)
+        goto done;
+
+    GtkTextIter iter;
+    while ((r = sd_bus_message_enter_container(reply, 'r', "ss")) > 0) {
+        const char *ts, *msg;
+        if(sd_bus_message_read(reply, "ss", &ts, &msg) < 0)
+            break;
+
+        gtk_text_buffer_get_end_iter(buf, &iter);
+
+        char line[1024];
+        snprintf(line, sizeof(line), "%s  %s\n", ts, msg);
+        gtk_text_buffer_insert(buf, &iter, line, -1);
+
+        sd_bus_message_exit_container(reply);
+    }
+
+    sd_bus_message_exit_container(reply);
+
+done:
+    sd_bus_message_unref(reply);
+    sd_bus_error_free(&err);
 }
+
+/* ---- SetConfig helper ---- */
+
+static int set_config(const char *key, const char *value)
+{
+    if(bus_connect() < 0)
+        return -1;
+
+    sd_bus_error err = SD_BUS_ERROR_NULL;
+    sd_bus_message *reply = NULL;
+
+    int r = sd_bus_call_method(gui.bus,
+                               CURFEW_DBUS_NAME, CURFEW_DBUS_PATH,
+                               CURFEW_DBUS_INTERFACE, "SetConfig",
+                               &err, &reply, "ss", key, value);
+    if(r < 0) {
+        show_toast(err.message ? err.message : strerror(-r));
+        sd_bus_error_free(&err);
+        return r;
+    }
+
+    sd_bus_message_unref(reply);
+    sd_bus_error_free(&err);
+    return 0;
+}
+
+/* ---- signal callbacks ---- */
 
 static void on_pause_clicked(GtkButton *btn, gpointer data)
 {
-    (void)btn;
-    CurfewApp *app = data;
-    run_helper("timer-stop", NULL, NULL);
-    refresh_status(app);
+    (void)btn; (void)data;
+    if(call_simple("Pause") == 0) {
+        show_toast("Curfew paused");
+        refresh_status();
+    }
 }
 
 static void on_resume_clicked(GtkButton *btn, gpointer data)
 {
-    (void)btn;
-    CurfewApp *app = data;
-    run_helper("timer-start", NULL, NULL);
-    refresh_status(app);
-}
-
-static void on_refresh_logs(GtkButton *btn, gpointer data)
-{
-    (void)btn;
-    CurfewApp *app = data;
-
-    curfew_journal_entry_t *entries = NULL;
-    int n = curfew_sd_journal_read(100, &entries);
-    if (n < 0) {
-        gtk_text_buffer_set_text(app->log_buffer,
-                                 "Unable to read journal (try running as root)",
-                                 -1);
-        return;
+    (void)btn; (void)data;
+    if(call_simple("Resume") == 0) {
+        show_toast("Curfew resumed");
+        refresh_status();
     }
-
-    GString *text = g_string_new(NULL);
-    for (int i = n - 1; i >= 0; i--)
-        g_string_append_printf(text, "%s  %s\n",
-                               entries[i].timestamp, entries[i].message);
-
-    gtk_text_buffer_set_text(app->log_buffer, text->str, (int)text->len);
-    g_string_free(text, TRUE);
-    free(entries);
 }
 
-/* ---- UI construction ---- */
-
-static GtkWidget *build_status_page(CurfewApp *app)
+static void on_apply_clicked(GtkButton *btn, gpointer data)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_widget_set_margin_top(box, 24);
-    gtk_widget_set_margin_bottom(box, 24);
-    gtk_widget_set_margin_start(box, 24);
-    gtk_widget_set_margin_end(box, 24);
+    (void)btn; (void)data;
 
-    app->lbl_timer_state = GTK_LABEL(gtk_label_new(""));
-    gtk_widget_add_css_class(GTK_WIDGET(app->lbl_timer_state), "title-4");
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(app->lbl_timer_state));
+    const char *start = gtk_editable_get_text(GTK_EDITABLE(gui.entry_start));
+    const char *end   = gtk_editable_get_text(GTK_EDITABLE(gui.entry_end));
+    const char *msg   = gtk_editable_get_text(GTK_EDITABLE(gui.entry_message));
+    int warn = (int)adw_spin_row_get_value(gui.spin_warn);
 
-    app->lbl_schedule = GTK_LABEL(gtk_label_new(""));
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(app->lbl_schedule));
+    char warn_str[16];
+    snprintf(warn_str, sizeof(warn_str), "%d", warn);
 
-    app->lbl_eval = GTK_LABEL(gtk_label_new(""));
-    gtk_widget_add_css_class(GTK_WIDGET(app->lbl_eval), "dim-label");
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(app->lbl_eval));
+    const char *dry = adw_switch_row_get_active(gui.switch_dry_run) ? "true" : "false";
 
-    app->lbl_warn = GTK_LABEL(gtk_label_new(""));
-    gtk_label_set_wrap(app->lbl_warn, TRUE);
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(app->lbl_warn));
+    int ok = 0;
+    ok |= set_config("start", start);
+    ok |= set_config("end", end);
+    ok |= set_config("warn_before", warn_str);
+    ok |= set_config("warn_message", msg);
+    ok |= set_config("dry_run", dry);
 
-    /* control buttons */
-    GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_widget_set_halign(btn_box, GTK_ALIGN_CENTER);
-
-    GtkWidget *btn_enable  = gtk_button_new_with_label("Enable");
-    GtkWidget *btn_disable = gtk_button_new_with_label("Disable");
-    GtkWidget *btn_pause   = gtk_button_new_with_label("Pause");
-    GtkWidget *btn_resume  = gtk_button_new_with_label("Resume");
-
-    gtk_widget_add_css_class(btn_enable, "suggested-action");
-    gtk_widget_add_css_class(btn_disable, "destructive-action");
-
-    g_signal_connect(btn_enable,  "clicked", G_CALLBACK(on_enable_clicked), app);
-    g_signal_connect(btn_disable, "clicked", G_CALLBACK(on_disable_clicked), app);
-    g_signal_connect(btn_pause,   "clicked", G_CALLBACK(on_pause_clicked), app);
-    g_signal_connect(btn_resume,  "clicked", G_CALLBACK(on_resume_clicked), app);
-
-    gtk_box_append(GTK_BOX(btn_box), btn_enable);
-    gtk_box_append(GTK_BOX(btn_box), btn_disable);
-    gtk_box_append(GTK_BOX(btn_box), btn_pause);
-    gtk_box_append(GTK_BOX(btn_box), btn_resume);
-    gtk_box_append(GTK_BOX(box), btn_box);
-
-    return box;
+    if(ok == 0) {
+        show_toast("Settings applied");
+        refresh_status();
+    }
 }
 
-static GtkWidget *build_settings_page(CurfewApp *app)
+static void on_reset_clicked(GtkButton *btn, gpointer data)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_widget_set_margin_top(box, 24);
-    gtk_widget_set_margin_bottom(box, 24);
-    gtk_widget_set_margin_start(box, 24);
-    gtk_widget_set_margin_end(box, 24);
-
-    /* start time */
-    AdwEntryRow *row_start = ADW_ENTRY_ROW(adw_entry_row_new());
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row_start), "Start Time");
-    app->ent_start = GTK_ENTRY(row_start);
-
-    /* end time */
-    AdwEntryRow *row_end = ADW_ENTRY_ROW(adw_entry_row_new());
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row_end), "End Time");
-    app->ent_end = GTK_ENTRY(row_end);
-
-    /* warn before */
-    GtkWidget *spn = gtk_spin_button_new_with_range(0, 1440, 1);
-    app->spn_warn = GTK_SPIN_BUTTON(spn);
-
-    AdwActionRow *row_warn = ADW_ACTION_ROW(adw_action_row_new());
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row_warn),
-                                  "Warn Before (minutes)");
-    adw_action_row_add_suffix(row_warn, spn);
-
-    /* warn message */
-    AdwEntryRow *row_msg = ADW_ENTRY_ROW(adw_entry_row_new());
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row_msg), "Warning Message");
-    app->ent_message = GTK_ENTRY(row_msg);
-
-    /* enabled switch */
-    GtkWidget *sw = gtk_switch_new();
-    gtk_widget_set_valign(sw, GTK_ALIGN_CENTER);
-    app->sw_enabled = GTK_SWITCH(sw);
-
-    AdwActionRow *row_en = ADW_ACTION_ROW(adw_action_row_new());
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row_en), "Enforcement");
-    adw_action_row_add_suffix(row_en, sw);
-    adw_action_row_set_activatable_widget(row_en, sw);
-
-    /* group */
-    AdwPreferencesGroup *grp = ADW_PREFERENCES_GROUP(
-        adw_preferences_group_new());
-    adw_preferences_group_set_title(grp, "Schedule");
-    adw_preferences_group_add(grp, GTK_WIDGET(row_start));
-    adw_preferences_group_add(grp, GTK_WIDGET(row_end));
-    adw_preferences_group_add(grp, GTK_WIDGET(row_warn));
-    adw_preferences_group_add(grp, GTK_WIDGET(row_msg));
-    adw_preferences_group_add(grp, GTK_WIDGET(row_en));
-
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(grp));
-
-    /* apply button */
-    GtkWidget *btn_apply = gtk_button_new_with_label("Apply");
-    gtk_widget_add_css_class(btn_apply, "suggested-action");
-    gtk_widget_set_halign(btn_apply, GTK_ALIGN_CENTER);
-    g_signal_connect(btn_apply, "clicked", G_CALLBACK(on_apply_clicked), app);
-    gtk_box_append(GTK_BOX(box), btn_apply);
-
-    return box;
+    (void)btn; (void)data;
+    if(call_simple("ResetConfig") == 0) {
+        show_toast("Configuration reset to defaults");
+        refresh_settings();
+        refresh_status();
+    }
 }
 
-static GtkWidget *build_logs_page(CurfewApp *app)
+static void on_refresh_logs_clicked(GtkButton *btn, gpointer data)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_set_margin_top(box, 12);
-    gtk_widget_set_margin_bottom(box, 12);
-    gtk_widget_set_margin_start(box, 12);
-    gtk_widget_set_margin_end(box, 12);
-
-    GtkWidget *btn_refresh = gtk_button_new_with_label("Refresh");
-    gtk_widget_set_halign(btn_refresh, GTK_ALIGN_START);
-    g_signal_connect(btn_refresh, "clicked", G_CALLBACK(on_refresh_logs), app);
-    gtk_box_append(GTK_BOX(box), btn_refresh);
-
-    GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_widget_set_vexpand(scroll, TRUE);
-
-    GtkWidget *tv = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(tv), TRUE);
-    app->log_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), tv);
-
-    gtk_box_append(GTK_BOX(box), scroll);
-    return box;
+    (void)btn; (void)data;
+    refresh_logs();
 }
 
-/* ---- activate ---- */
-
-static void activate(GtkApplication *gtk_app, gpointer user_data)
+static void on_stack_page_changed(AdwViewStack *stack, GParamSpec *pspec,
+                                  gpointer data)
 {
-    (void)user_data;
-    CurfewApp *app = g_new0(CurfewApp, 1);
+    (void)pspec; (void)data;
+    const char *name = adw_view_stack_get_visible_child_name(stack);
+    gboolean on_logs = name && strcmp(name, "logs") == 0;
+    gtk_widget_set_visible(gui.btn_refresh_logs, on_logs);
+}
 
-    app->window = ADW_APPLICATION_WINDOW(
-        adw_application_window_new(gtk_app));
-    gtk_window_set_title(GTK_WINDOW(app->window), "Curfew");
-    gtk_window_set_default_size(GTK_WINDOW(app->window), 500, 600);
+/* ---- locate UI file ---- */
 
-    /* view stack with pages */
-    AdwViewStack *stack = ADW_VIEW_STACK(adw_view_stack_new());
+static const char *find_ui_file(void)
+{
+    /* development: check relative to CWD first */
+    if(access("resources/curfew-gui.ui", F_OK) == 0)
+        return "resources/curfew-gui.ui";
+    /* installed path */
+    return "/usr/share/curfew/curfew-gui.ui";
+}
 
-    GtkWidget *status_page   = build_status_page(app);
-    GtkWidget *settings_page = build_settings_page(app);
-    GtkWidget *logs_page     = build_logs_page(app);
+/* ---- widget lookup helper ---- */
 
-    adw_view_stack_add_titled(stack, status_page, "status", "Status");
-    adw_view_stack_add_titled(stack, settings_page, "settings", "Settings");
-    adw_view_stack_add_titled(stack, logs_page, "logs", "Logs");
+#define GET_WIDGET(builder, type, field, id) \
+    gui.field = type(gtk_builder_get_object(builder, id))
 
-    /* header bar with view switcher */
-    AdwHeaderBar *hb = ADW_HEADER_BAR(adw_header_bar_new());
-    AdwViewSwitcher *vs = ADW_VIEW_SWITCHER(adw_view_switcher_new());
-    adw_view_switcher_set_stack(vs, stack);
-    adw_view_switcher_set_policy(vs, ADW_VIEW_SWITCHER_POLICY_WIDE);
-    adw_header_bar_set_title_widget(hb, GTK_WIDGET(vs));
+/* ---- application activate ---- */
 
-    /* main layout */
-    GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_append(GTK_BOX(main_box), GTK_WIDGET(hb));
-    gtk_box_append(GTK_BOX(main_box), GTK_WIDGET(stack));
+static void on_activate(GtkApplication *app, gpointer data)
+{
+    (void)data;
 
-    adw_application_window_set_content(app->window, main_box);
+    const char *ui_path = find_ui_file();
+    GtkBuilder *builder = gtk_builder_new_from_file(ui_path);
+
+    /* main window */
+    AdwApplicationWindow *window =
+        ADW_APPLICATION_WINDOW(gtk_builder_get_object(builder, "main_window"));
+    gtk_window_set_application(GTK_WINDOW(window), app);
+
+    /* toast overlay */
+    GET_WIDGET(builder, ADW_TOAST_OVERLAY, toast_overlay, "toast_overlay");
+
+    /* view switcher bar — connect to title for responsive layout */
+    AdwViewSwitcherTitle *vs_title =
+        ADW_VIEW_SWITCHER_TITLE(gtk_builder_get_object(builder,
+                                                        "view_switcher_title"));
+    AdwViewSwitcherBar *vs_bar =
+        ADW_VIEW_SWITCHER_BAR(gtk_builder_get_object(builder,
+                                                      "view_switcher_bar"));
+    g_object_bind_property(vs_title, "title-visible",
+                           vs_bar, "reveal",
+                           G_BINDING_SYNC_CREATE);
+
+    /* status page widgets */
+    GET_WIDGET(builder, ADW_STATUS_PAGE, status_banner,   "status_banner");
+    GET_WIDGET(builder, ADW_ACTION_ROW, row_paused,      "row_paused");
+    GET_WIDGET(builder, ADW_ACTION_ROW, row_in_curfew,   "row_in_curfew");
+    GET_WIDGET(builder, ADW_ACTION_ROW, row_should_warn, "row_should_warn");
+    GET_WIDGET(builder, ADW_ACTION_ROW, row_schedule,    "row_schedule");
+    GET_WIDGET(builder, ADW_ACTION_ROW, row_reason,      "row_reason");
+    GET_WIDGET(builder, ADW_ACTION_ROW, row_warn_msg,    "row_warn_msg");
+
+    /* settings page widgets */
+    GET_WIDGET(builder, ADW_ENTRY_ROW,  entry_start,     "entry_start");
+    GET_WIDGET(builder, ADW_ENTRY_ROW,  entry_end,       "entry_end");
+    GET_WIDGET(builder, ADW_SPIN_ROW,   spin_warn,       "spin_warn");
+    GET_WIDGET(builder, ADW_ENTRY_ROW,  entry_message,   "entry_message");
+    GET_WIDGET(builder, ADW_SWITCH_ROW, switch_dry_run,  "switch_dry_run");
+
+    /* logs page widgets */
+    GET_WIDGET(builder, GTK_TEXT_VIEW,  logs_text_view,  "logs_text_view");
+    gui.btn_refresh_logs = GTK_WIDGET(gtk_builder_get_object(builder, "btn_refresh_logs"));
+
+    /* connect signals — status buttons */
+    GtkButton *btn;
+
+    btn = GTK_BUTTON(gtk_builder_get_object(builder, "btn_pause"));
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_pause_clicked), NULL);
+
+    btn = GTK_BUTTON(gtk_builder_get_object(builder, "btn_resume"));
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_resume_clicked), NULL);
+
+    /* settings buttons */
+    btn = GTK_BUTTON(gtk_builder_get_object(builder, "btn_apply"));
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_apply_clicked), NULL);
+
+    btn = GTK_BUTTON(gtk_builder_get_object(builder, "btn_reset"));
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_reset_clicked), NULL);
+
+    /* logs button (in header bar) */
+    g_signal_connect(gui.btn_refresh_logs, "clicked",
+                     G_CALLBACK(on_refresh_logs_clicked), NULL);
+
+    /* show refresh button only on logs page */
+    AdwViewStack *stack = ADW_VIEW_STACK(gtk_builder_get_object(builder, "view_stack"));
+    g_signal_connect(stack, "notify::visible-child",
+                     G_CALLBACK(on_stack_page_changed), NULL);
+
+    g_object_unref(builder);
 
     /* initial data load */
-    curfew_config_load(CURFEW_CONFIG_PATH, &app->cfg);
-    refresh_status(app);
-    populate_settings(app);
+    refresh_status();
+    refresh_settings();
+    refresh_logs();
 
-    gtk_window_present(GTK_WINDOW(app->window));
+    gtk_window_present(GTK_WINDOW(window));
 }
 
 /* ---- main ---- */
 
 int main(int argc, char *argv[])
 {
-    AdwApplication *app = adw_application_new("org.curfew.gui",
-                                              G_APPLICATION_DEFAULT_FLAGS);
-    g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
-    int status = g_application_run(G_APPLICATION(app), argc, argv);
-    g_object_unref(app);
+    gui.app = adw_application_new("org.curfew.gui", G_APPLICATION_DEFAULT_FLAGS);
+    g_signal_connect(gui.app, "activate", G_CALLBACK(on_activate), NULL);
+
+    int status = g_application_run(G_APPLICATION(gui.app), argc, argv);
+
+    if(gui.bus)
+        sd_bus_unref(gui.bus);
+    g_object_unref(gui.app);
     return status;
 }

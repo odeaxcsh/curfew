@@ -1,0 +1,307 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<interface>
+  <requires lib="gtk" version="4.0"/>
+  <requires lib="libadwaita" version="1.0"/>
+  <object class="AdwApplicationWindow" id="main_window">
+    <property name="content">
+      <object class="AdwToastOverlay" id="toast_overlay">
+        <property name="child">
+          <object class="AdwToolbarView">
+            <property name="content">
+              <object class="AdwViewStack" id="view_stack">
+                <child>
+                  <object class="AdwViewStackPage">
+                    <property name="child">
+                      <object class="GtkScrolledWindow">
+                        <property name="child">
+                          <object class="AdwClamp">
+                            <property name="child">
+                              <object class="GtkBox">
+                                <property name="margin-bottom">24</property>
+                                <property name="margin-end">12</property>
+                                <property name="margin-start">12</property>
+                                <property name="margin-top">24</property>
+                                <property name="orientation">vertical</property>
+                                <property name="spacing">18</property>
+                                <child>
+                                  <object class="AdwStatusPage" id="status_banner">
+                                    <property name="description">No curfew active</property>
+                                    <property name="icon-name">emblem-ok-symbolic</property>
+                                    <property name="title">All Clear</property>
+                                    <property name="vexpand">false</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwPreferencesGroup">
+                                    <property name="description">Live status from the curfew daemon</property>
+                                    <property name="title">Current State</property>
+                                    <child>
+                                      <object class="AdwActionRow" id="row_paused">
+                                        <property name="icon-name">media-playback-pause-symbolic</property>
+                                        <property name="title">Paused</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwActionRow" id="row_in_curfew">
+                                        <property name="icon-name">xsi-weather-clear-night-symbolic</property>
+                                        <property name="subtitle"/>
+                                        <property name="title">In Curfew</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwActionRow" id="row_should_warn">
+                                        <property name="icon-name">dialog-warning</property>
+                                        <property name="title">Warning Active</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwPreferencesGroup">
+                                    <property name="description">Current curfew window and rules</property>
+                                    <property name="title">Schedule</property>
+                                    <child>
+                                      <object class="AdwActionRow" id="row_schedule">
+                                        <property name="icon-name">appointment-symbolic</property>
+                                        <property name="title">Window</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwActionRow" id="row_reason">
+                                        <property name="icon-name">dialog-information-symbolic</property>
+                                        <property name="title">Evaluation</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwActionRow" id="row_warn_msg">
+                                        <property name="icon-name">user-info-symbolic</property>
+                                        <property name="title">Warn Message</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="halign">center</property>
+                                    <property name="orientation">horizontal</property>
+                                    <property name="spacing">12</property>
+                                    <child>
+                                      <object class="GtkButton" id="btn_pause">
+                                        <property name="label">Pause</property>
+                                        <style>
+                                          <class name="pill"/>
+                                          <class name="destructive-action"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkButton" id="btn_resume">
+                                        <property name="label">Resume</property>
+                                        <style>
+                                          <class name="pill"/>
+                                          <class name="suggested-action"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </property>
+                            <property name="maximum-size">500</property>
+                          </object>
+                        </property>
+                        <property name="hscrollbar-policy">never</property>
+                      </object>
+                    </property>
+                    <property name="icon-name">info-symbolic</property>
+                    <property name="name">status</property>
+                    <property name="title">Status</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="AdwViewStackPage">
+                    <property name="child">
+                      <object class="GtkScrolledWindow">
+                        <property name="child">
+                          <object class="AdwClamp">
+                            <property name="child">
+                              <object class="GtkBox">
+                                <property name="margin-bottom">24</property>
+                                <property name="margin-end">12</property>
+                                <property name="margin-start">12</property>
+                                <property name="margin-top">24</property>
+                                <property name="orientation">vertical</property>
+                                <property name="spacing">18</property>
+                                <child>
+                                  <object class="AdwPreferencesGroup">
+                                    <property name="description">Define when the curfew is active. Use 24-hour format.</property>
+                                    <property name="title">Schedule</property>
+                                    <child>
+                                      <object class="AdwEntryRow" id="entry_start">
+                                        <property name="title">Start Time (HH:MM)</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwEntryRow" id="entry_end">
+                                        <property name="title">End Time (HH:MM)</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwSpinRow" id="spin_warn">
+                                        <property name="adjustment">
+                                          <object class="GtkAdjustment">
+                                            <property name="lower">0</property>
+                                            <property name="page-increment">5</property>
+                                            <property name="step-increment">1</property>
+                                            <property name="upper">120</property>
+                                            <property name="value">15</property>
+                                          </object>
+                                        </property>
+                                        <property name="subtitle">Minutes before curfew to show a warning</property>
+                                        <property name="title">Warn Before</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="AdwEntryRow" id="entry_message">
+                                        <property name="title">Warning Message</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="AdwPreferencesGroup">
+                                    <property name="description">Control how the daemon enforces curfew</property>
+                                    <property name="title">Behavior</property>
+                                    <child>
+                                      <object class="AdwSwitchRow" id="switch_dry_run">
+                                        <property name="subtitle">Notify only: do not shut down the system</property>
+                                        <property name="title">Dry Run</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="halign">center</property>
+                                    <property name="orientation">horizontal</property>
+                                    <property name="spacing">12</property>
+                                    <child>
+                                      <object class="GtkButton" id="btn_apply">
+                                        <property name="label">Apply</property>
+                                        <style>
+                                          <class name="pill"/>
+                                          <class name="suggested-action"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkButton" id="btn_reset">
+                                        <property name="label">Reset to Defaults</property>
+                                        <style>
+                                          <class name="pill"/>
+                                          <class name="destructive-action"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </property>
+                            <property name="maximum-size">500</property>
+                          </object>
+                        </property>
+                        <property name="hscrollbar-policy">never</property>
+                      </object>
+                    </property>
+                    <property name="icon-name">preferences-system-symbolic</property>
+                    <property name="name">settings</property>
+                    <property name="title">Settings</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="AdwViewStackPage">
+                    <property name="child">
+                      <object class="GtkScrolledWindow">
+                        <property name="child">
+                          <object class="AdwClamp">
+                            <property name="child">
+                              <object class="GtkBox">
+                                <property name="margin-bottom">24</property>
+                                <property name="margin-end">12</property>
+                                <property name="margin-start">12</property>
+                                <property name="margin-top">24</property>
+                                <property name="orientation">vertical</property>
+                                <property name="spacing">12</property>
+                                <child>
+                                  <object class="GtkFrame">
+                                    <property name="child">
+                                      <object class="GtkScrolledWindow">
+                                        <property name="child">
+                                          <object class="GtkTextView" id="logs_text_view">
+                                            <property name="bottom-margin">12</property>
+                                            <property name="cursor-visible">false</property>
+                                            <property name="editable">false</property>
+                                            <property name="left-margin">12</property>
+                                            <property name="monospace">true</property>
+                                            <property name="right-margin">12</property>
+                                            <property name="top-margin">12</property>
+                                            <property name="wrap-mode">word-char</property>
+                                          </object>
+                                        </property>
+                                        <property name="min-content-height">400</property>
+                                        <property name="vexpand">true</property>
+                                      </object>
+                                    </property>
+                                    <property name="vexpand">true</property>
+                                    <style>
+                                      <class name="view"/>
+                                    </style>
+                                  </object>
+                                </child>
+                              </object>
+                            </property>
+                            <property name="maximum-size">700</property>
+                          </object>
+                        </property>
+                        <property name="hscrollbar-policy">never</property>
+                      </object>
+                    </property>
+                    <property name="icon-name">document-open-recent-symbolic</property>
+                    <property name="name">logs</property>
+                    <property name="title">Logs</property>
+                  </object>
+                </child>
+              </object>
+            </property>
+            <child type="top">
+              <object class="AdwHeaderBar" id="header_bar">
+                <property name="title-widget">
+                  <object class="AdwViewSwitcherTitle" id="view_switcher_title">
+                    <property name="stack">view_stack</property>
+                  </object>
+                </property>
+                <child type="end">
+                  <object class="GtkButton" id="btn_refresh_logs">
+                    <property name="icon-name">view-refresh-symbolic</property>
+                    <property name="tooltip-text">Refresh Logs</property>
+                    <property name="visible">false</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child type="bottom">
+              <object class="AdwViewSwitcherBar" id="view_switcher_bar">
+                <property name="stack">view_stack</property>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </property>
+    <property name="default-height">1000</property>
+    <property name="default-width">800</property>
+    <property name="height-request">500</property>
+    <property name="title">Curfew</property>
+    <property name="width-request">360</property>
+  </object>
+</interface>

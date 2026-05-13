@@ -1,0 +1,11 @@
+[Unit]
+Description=Curfew enforcement daemon
+
+[Service]
+Type=dbus
+BusName=org.curfew
+ExecStart=/usr/lib/curfew/curfew-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

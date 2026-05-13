@@ -1,66 +1,111 @@
-#include "curfew/core.h"
-#include "curfew/config.h"
-#include "curfew/notify.h"
-#include "curfew/systemd_util.h"
+#include "service/dbus.h"
+#include "service/curfew.h"
 
-#include <stdio.h>
-#include <time.h>
-#include <unistd.h>
+#include "common/config.h"
+#include "common/dbus_names.h"
+
+#include <signal.h>
+#include <string.h>
+#include <sys/signalfd.h>
+#include <systemd/sd-bus.h>
+#include <systemd/sd-event.h>
+#include <systemd/sd-journal.h>
+
+static int on_timer(sd_event_source *s, uint64_t usec, void *userdata)
+{
+    curfew_enforce(userdata);
+
+    sd_event_source_set_time(s, usec + 60 * 1000000ULL);
+    sd_event_source_set_enabled(s, SD_EVENT_ONESHOT);
+    return 0;
+}
+
+
+static int on_signal(sd_event_source *s, const struct signalfd_siginfo *si, void *userdata)
+{
+    (void)si; (void)userdata;
+    return sd_event_exit(sd_event_source_get_event(s), 0);
+}
+
 
 int main(void)
 {
-    curfew_config_t cfg;
-    if (curfew_config_load(CURFEW_CONFIG_PATH, &cfg) < 0) {
-        curfew_log(4, "config not found or invalid, using defaults");
-        cfg = curfew_config_defaults();
+    curfew_daemon_t daemon_state = {0};
+    if(curfew_config_load(CURFEW_CONFIG_PATH, &daemon_state.config) < 0) {
+        sd_journal_print(LOG_ERR, "failed to load config");
+        return 1;
     }
 
-    curfew_policy_t policy = {
-        .start              = cfg.start,
-        .end                = cfg.end,
-        .warn_before_minutes = cfg.warn_before_minutes,
-        .enabled            = cfg.enabled,
-    };
+    // block SIGTERM and SIGINT so we can handle them via the event loop
+    sigset_t ss;
+    sigemptyset(&ss);
+    sigaddset(&ss, SIGTERM);
+    sigaddset(&ss, SIGINT);
+    sigprocmask(SIG_BLOCK, &ss, NULL);
 
-    if (!curfew_policy_is_valid(&policy)) {
-        curfew_log(4, "invalid policy (start==end?), skipping");
-        return 0;
+    // make a sd-event loop
+    sd_event *event = NULL;
+    int r = sd_event_default(&event);
+    if(r < 0) {
+        sd_journal_print(LOG_ERR, "failed to create event loop: %s", strerror(-r));
+        return 1;
     }
 
-    if (!policy.enabled) {
-        curfew_log(6, "curfew disabled, skipping");
-        return 0;
+    // open a system bus
+    sd_bus *bus = NULL;
+    r = sd_bus_open_system(&bus);
+    if(r < 0) {
+        sd_journal_print(LOG_ERR, "system bus: %s", strerror(-r));
+        goto finish;
     }
 
-    time_t now = time(NULL);
-    curfew_state_t state = curfew_eval(&policy, now);
-
-    curfew_log(6, "%s", state.reason);
-
-    if (state.should_warn) {
-        const char *msg = cfg.warn_message[0]
-            ? cfg.warn_message
-            : "Curfew starts soon. Save your work!";
-        curfew_notify_send("Curfew Warning", msg);
+    // register vtables
+    r = curfew_dbus_init(bus, &daemon_state);
+    if(r < 0) {
+        sd_journal_print(LOG_ERR, "dbus init: %s", strerror(-r));
+        goto finish;
     }
 
-    if (state.is_in_curfew) {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-                 "Curfew active (%02d:%02d-%02d:%02d). %s",
-                 cfg.start.hour, cfg.start.minute,
-                 cfg.end.hour, cfg.end.minute,
-                 cfg.dry_run ? "Shutdown skipped (dry-run)." : "Shutting down.");
-        curfew_notify_send(cfg.dry_run ? "Curfew [DRY RUN]" : "Curfew", buf);
-
-        if (cfg.dry_run) {
-            curfew_log(3, "DRY_RUN: would have powered off (curfew active)");
-        } else {
-            curfew_log(3, "POWER_OFF: within curfew window");
-            execl("/usr/bin/systemctl", "systemctl", "poweroff", (char *)NULL);
-            curfew_log(3, "failed to exec systemctl poweroff");
-        }
+    // assign a name on the bus
+    r = sd_bus_request_name(bus, CURFEW_DBUS_NAME, 0);
+    if(r < 0) {
+        sd_journal_print(LOG_ERR, "bus name: %s", strerror(-r));
+        goto finish;
     }
 
-    return 0;
+    // connect the bus to the event loop
+    r = sd_bus_attach_event(bus, event, SD_EVENT_PRIORITY_NORMAL);
+    if(r < 0) {
+        sd_journal_print(LOG_ERR, "attach: %s", strerror(-r));
+        goto finish;
+    }
+
+    // fire up the first timer
+    sd_event_source *timer = NULL;
+    uint64_t now_usec;
+    sd_event_now(event, CLOCK_MONOTONIC, &now_usec);
+    r = sd_event_add_time(
+        event, &timer, CLOCK_MONOTONIC,
+        now_usec + 1000000ULL, 0,
+        on_timer, &daemon_state
+    );
+    if(r < 0) {
+        sd_journal_print(LOG_ERR, "timer: %s", strerror(-r));
+        goto finish;
+    }
+
+    // wire SIGTERM and SIGINT to event loop close
+    sd_event_add_signal(event, NULL, SIGTERM, on_signal, NULL);
+    sd_event_add_signal(event, NULL, SIGINT, on_signal, NULL);
+
+    daemon_state.event = event;
+    sd_journal_print(LOG_INFO, "curfew-daemon started");
+
+    // run the event loop until termination
+    r = sd_event_loop(event);
+
+finish:
+    sd_bus_unref(bus);
+    sd_event_unref(event);
+    return r < 0 ? 1 : 0;
 }

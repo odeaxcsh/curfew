@@ -14,121 +14,100 @@ libsystemd = dependency('libsystemd', required : true)
 libadwaita = dependency('libadwaita-1', version : '>=1.0', required : get_option('gui'))
 gtk4 = dependency('gtk4', version : '>=4.0', required : get_option('gui'))
 
+# all includes resolve from src/
+src_inc = include_directories('src')
 
-# includes
-include = include_directories('include')
+# ---- libraries ----
 
-
-# core lib
-core_lib = static_library('curfew_core',
-  'src/core/core.c',
-  include_directories : include,
-)
-
-# config library
-config_lib = static_library('curfew_config',
+common_lib = static_library('curfew_common',
   'src/common/config.c',
-  include_directories : include,
-  link_with : [core_lib],
-)
-
-# systemd library
-systemd_lib = static_library('curfew_systemd',
-  'src/systemd/systemd.c',
-  include_directories : include,
+  'src/common/time_utils.c',
+  include_directories : src_inc,
   dependencies : libsystemd,
 )
 
-# notify library
-notify_lib = static_library('curfew_notify',
-  'src/common/notify.c',
-  include_directories : include,
-  link_with : [systemd_lib],
+curfew_lib = static_library('curfew_logic',
+  'src/service/curfew.c',
+  include_directories : src_inc,
   dependencies : libsystemd,
 )
 
-common_libs = [core_lib, config_lib, systemd_lib, notify_lib]
-common_deps = [libsystemd]
+# service layer (systemd, notify, enforcement)
+service_lib = static_library('curfew_service',
+  'src/service/systemd.c',
+  'src/service/notify.c',
+  include_directories : src_inc,
+  link_with : [common_lib],
+  dependencies : libsystemd,
+)
 
-# curfew-service
-executable('curfew-service',
+# D-Bus interface
+dbus_lib = static_library('curfew_dbus',
+  'src/service/dbus.c',
+  include_directories : src_inc,
+  link_with : [common_lib, curfew_lib],
+  dependencies : libsystemd,
+)
+
+# ---- executables ----
+
+# daemon
+executable('curfew-daemon',
   'src/service/main.c',
-  include_directories : include,
-  link_with : common_libs,
-  dependencies : common_deps,
+  include_directories : src_inc,
+  link_with : [common_lib, curfew_lib, service_lib, dbus_lib],
+  dependencies : libsystemd,
   install : true,
   install_dir : get_option('libdir') / 'curfew',
 )
 
-# curfew-helper
-executable('curfew-helper',
-  'src/service/helper.c',
-  include_directories : include,
-  link_with : common_libs,
-  dependencies : common_deps,
-  install : true,
-  install_dir : get_option('libdir') / 'curfew',
-)
-
-# curfew cli
+# CLI
 executable('curfew',
   'src/cli/main.c',
-  include_directories : include,
-  link_with : common_libs,
-  dependencies : common_deps,
+  include_directories : src_inc,
+  dependencies : libsystemd,
   install : true,
   install_dir : get_option('bindir'),
 )
 
-# curfew gui
+# GUI
 if get_option('gui')
   executable('curfew-gui',
     'src/gui/main.c',
-    include_directories : include,
-    link_with : common_libs,
-    dependencies : [common_deps, gtk4, libadwaita],
+    include_directories : src_inc,
+    dependencies : [libsystemd, gtk4, libadwaita],
     install : true,
     install_dir : get_option('bindir'),
   )
-endif
 
-# systemd unit files
-install_data('configs/curfew.service',
-  install_dir : '/usr/lib/systemd/system',
-)
-install_data('configs/curfew.timer',
-  install_dir : '/usr/lib/systemd/system',
-)
+  install_data('resources/curfew-gui.ui',
+    install_dir : get_option('datadir') / 'curfew',
+  )
 
-# polkit policy file
-install_data('configs/org.curfew.policy',
-  install_dir : get_option('datadir') / 'polkit-1' / 'actions',
-)
-
-# desktop file
-if get_option('gui')
   install_data('resources/org.curfew.gui.desktop',
     install_dir : get_option('datadir') / 'applications',
   )
 endif
 
-# config file
+# ---- installed config files ----
+
+install_data('configs/curfew-daemon.service',
+  install_dir : '/usr/lib/systemd/system',
+)
+
+install_data('configs/org.curfew.conf',
+  install_dir : get_option('datadir') / 'dbus-1' / 'system.d',
+)
+
+install_data('configs/org.curfew.service',
+  install_dir : get_option('datadir') / 'dbus-1' / 'system-services',
+)
+
+install_data('configs/org.curfew.policy',
+  install_dir : get_option('datadir') / 'polkit-1' / 'actions',
+)
+
 install_data('configs/curfew.conf.example',
   install_dir : '/etc/curfew',
-  rename : 'curfew.conf.example',
+  rename : 'curfew.conf',
 )
-
-# tests
-test_core = executable('test_core',
-  'tests/test_core.c',
-  include_directories : include,
-  link_with : [core_lib],
-)
-test('core', test_core)
-
-test_config = executable('test_config',
-  'tests/test_config.c',
-  include_directories : include,
-  link_with : [core_lib, config_lib],
-)
-test('config', test_config)

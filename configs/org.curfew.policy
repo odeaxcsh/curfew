@@ -6,15 +6,23 @@
   <vendor>Curfew</vendor>
   <vendor_url>https://github.com/sophie/curfew</vendor_url>
 
-  <action id="org.curfew.helper">
-    <description>Manage the curfew service</description>
-    <message>Authentication is required to configure the curfew service</message>
+  <action id="org.curfew.configure">
+    <description>Configure the curfew service</description>
+    <message>Authentication is required to change curfew settings</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>
       <allow_active>auth_self_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/curfew/curfew-helper</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="org.curfew.manage">
+    <description>Manage curfew enforcement</description>
+    <message>Authentication is required to manage curfew enforcement</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
+    </defaults>
   </action>
 </policyconfig>

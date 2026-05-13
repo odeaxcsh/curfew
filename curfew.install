@@ -1,0 +1,26 @@
+post_install() {
+  systemctl daemon-reload
+  systemd-sysusers 2>/dev/null || true
+  echo ":: Start the curfew daemon with: systemctl enable --now curfew-daemon"
+}
+
+post_upgrade() {
+  systemctl daemon-reload
+  dbus-send --system --type=method_call \
+    --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus.ReloadConfig 2>/dev/null || true
+  if systemctl is-active --quiet curfew-daemon.service; then
+    systemctl restart curfew-daemon.service
+  fi
+}
+
+pre_remove() {
+  systemctl disable --now curfew-daemon.service 2>/dev/null || true
+}
+
+post_remove() {
+  systemctl daemon-reload
+  dbus-send --system --type=method_call \
+    --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus.ReloadConfig 2>/dev/null || true
+}

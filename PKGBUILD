@@ -1,11 +1,12 @@
 pkgname=curfew
 pkgver=1.0.0
 pkgrel=1
-pkgdesc='Systemd-based sleep curfew with CLI and GTK4 UI'
+pkgdesc='Systemd-based sleep curfew with D-Bus daemon, CLI and GTK4 UI'
 arch=('x86_64')
 license=('MIT')
 depends=('systemd-libs' 'gtk4' 'libadwaita' 'polkit')
 makedepends=('meson' 'gcc' 'pkgconf' 'systemd')
+install=curfew.install
 backup=('etc/curfew/curfew.conf')
 source=()
 sha256sums=()
@@ -28,21 +29,4 @@ package() {
   # Install default config if not present
   install -Dm644 configs/curfew.conf.example \
     "$pkgdir/etc/curfew/curfew.conf"
-}
-
-post_install() {
-  systemctl daemon-reload
-  echo ":: Enable the curfew timer with: systemctl enable --now curfew.timer"
-}
-
-post_upgrade() {
-  systemctl daemon-reload
-  if systemctl is-active --quiet curfew.timer; then
-    systemctl restart curfew.timer
-  fi
-}
-
-pre_remove() {
-  systemctl disable --now curfew.timer 2>/dev/null || true
-  systemctl daemon-reload
 }
