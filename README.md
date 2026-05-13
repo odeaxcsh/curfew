@@ -6,6 +6,16 @@ notification and then shuts the machine down. The CLI (`curfew`) and GTK GUI
 communicate with the daemon over the system bus, with per-operation polkit
 authentication.
 
+### Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="assets/status.png" alt="Status page" width="100%"></td>
+    <td align="center"><img src="assets/settings.png" alt="Settings page" width="100%"></td>
+    <td align="center"><img src="assets/logs.png" alt="Logs page" width="100%"></td>
+  </tr>
+</table>
+
 ## Dependencies
 
 Runtime:
@@ -196,6 +206,7 @@ curfew-gui
 
 The GTK4/libadwaita interface provides the same controls as the CLI. A desktop
 entry is installed so it also appears in application launchers.
+
 
 ## Project structure
 
